@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Transcript Extractor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📺 YouTube Transcript Extractor</h1>
+            <p>Extract transcripts from YouTube videos instantly</p>
+        </header>
+
+        <main>
+            <form id="transcriptForm" class="form">
+                <div class="input-group">
+                    <label for="youtubeUrl">YouTube URL:</label>
+                    <input 
+                        type="url" 
+                        id="youtubeUrl" 
+                        name="youtubeUrl" 
+                        placeholder="https://www.youtube.com/watch?v=..."
+                        required
+                    >
+                </div>
+                
+                <button type="submit" id="extractBtn" class="btn btn-primary">
+                    Extract Transcript
+                </button>
+            </form>
+
+            <div id="loading" class="loading hidden">
+                <div class="spinner"></div>
+                <p>Extracting transcript...</p>
+            </div>
+
+            <div id="error" class="error hidden">
+                <h3>Error</h3>
+                <p id="errorMessage"></p>
+            </div>
+
+            <div id="result" class="result hidden">
+                <h3>Transcript</h3>
+                <div class="transcript-info">
+                    <strong>Video URL:</strong> <span id="videoUrl"></span>
+                </div>
+                <div class="transcript-content">
+                    <div id="transcript"></div>
+                </div>
+                <div class="actions">
+                    <button id="copyBtn" class="btn btn-secondary">Copy to Clipboard</button>
+                    <button id="downloadBtn" class="btn btn-secondary">Download as TXT</button>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a> and Netlify Functions</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
