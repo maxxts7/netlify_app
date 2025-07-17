@@ -1,6 +1,5 @@
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+const https = require('https');
+const { URL } = require('url');
 
 exports.handler = async (event, context) => {
   if (event.httpMethod !== 'POST') {
@@ -46,14 +45,7 @@ exports.handler = async (event, context) => {
       };
     }
 
-    // Create temporary directory for downloads
-    const tempDir = `/tmp/yt-${Date.now()}`;
-    fs.mkdirSync(tempDir, { recursive: true });
-
-    const transcript = await extractTranscript(url, tempDir);
-    
-    // Clean up temporary directory
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    const transcript = await extractTranscript(url);
 
     return {
       statusCode: 200,
@@ -78,105 +70,199 @@ exports.handler = async (event, context) => {
   }
 };
 
-function extractTranscript(url, tempDir) {
+async function extractTranscript(url) {
+  try {
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+      throw new Error('Invalid YouTube URL - could not extract video ID');
+    }
+
+    // Get player response from YouTube's Innertube API
+    const playerResponse = await getPlayerResponse(videoId);
+    
+    // Extract caption tracks from player response
+    const captionTracks = extractCaptionTracks(playerResponse);
+    
+    if (!captionTracks || captionTracks.length === 0) {
+      throw new Error('No transcript/subtitles found for this video');
+    }
+
+    // Find English captions (prefer manual over auto-generated)
+    const englishTrack = findEnglishTrack(captionTracks);
+    
+    if (!englishTrack) {
+      throw new Error('No English transcript found for this video');
+    }
+
+    // Download and parse the transcript
+    const transcriptData = await downloadTranscript(englishTrack.baseUrl);
+    
+    return parseTranscriptData(transcriptData);
+    
+  } catch (error) {
+    throw new Error(`Failed to extract transcript: ${error.message}`);
+  }
+}
+
+function extractVideoId(url) {
+  const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+  const match = url.match(regex);
+  return match ? match[1] : null;
+}
+
+async function getPlayerResponse(videoId) {
+  const apiUrl = 'https://www.youtube.com/youtubei/v1/player';
+  const requestBody = {
+    context: {
+      client: {
+        clientName: 'WEB',
+        clientVersion: '2.20240101.00.00'
+      }
+    },
+    videoId: videoId
+  };
+
   return new Promise((resolve, reject) => {
-    const ytDlpPath = '/home/manu/anaconda3/bin/yt-dlp';
-    
-    const args = [
-      '--write-auto-sub',
-      '--sub-lang', 'en',
-      '--sub-format', 'vtt',
-      '--skip-download',
-      '--output', path.join(tempDir, '%(title)s.%(ext)s'),
-      url
-    ];
-
-    const ytdlp = spawn(ytDlpPath, args);
-    
-    let stderr = '';
-    let stdout = '';
-
-    ytdlp.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    ytdlp.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    ytdlp.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`yt-dlp failed with code ${code}: ${stderr}`));
-        return;
+    const postData = JSON.stringify(requestBody);
+    const options = {
+      hostname: 'www.youtube.com',
+      path: '/youtubei/v1/player',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
+    };
 
-      try {
-        // Find the VTT file
-        const files = fs.readdirSync(tempDir);
-        const vttFile = files.find(file => file.endsWith('.vtt'));
-        
-        if (!vttFile) {
-          reject(new Error('No transcript file found. Video may not have subtitles.'));
-          return;
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          resolve(response);
+        } catch (error) {
+          reject(new Error('Failed to parse YouTube API response'));
         }
-
-        const vttPath = path.join(tempDir, vttFile);
-        const vttContent = fs.readFileSync(vttPath, 'utf8');
-        
-        // Parse VTT content to extract text
-        const transcript = parseVTT(vttContent);
-        resolve(transcript);
-        
-      } catch (error) {
-        reject(new Error(`Failed to process transcript: ${error.message}`));
-      }
+      });
     });
 
-    ytdlp.on('error', (error) => {
-      reject(new Error(`Failed to spawn yt-dlp: ${error.message}`));
+    req.on('error', (error) => {
+      reject(new Error(`YouTube API request failed: ${error.message}`));
     });
+
+    req.write(postData);
+    req.end();
   });
 }
 
-function parseVTT(vttContent) {
-  const lines = vttContent.split('\n');
-  const transcript = [];
-  let currentText = '';
-  let currentTimestamp = '';
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    // Skip WEBVTT header and empty lines
-    if (line === 'WEBVTT' || line === '' || line.startsWith('NOTE')) {
-      continue;
-    }
-    
-    // Timestamp line (contains -->)
-    if (line.includes('-->')) {
-      // If we have accumulated text, save it
-      if (currentText && currentTimestamp) {
-        transcript.push({
-          timestamp: currentTimestamp,
-          text: currentText.trim()
-        });
-      }
-      
-      currentTimestamp = line.split('-->')[0].trim();
-      currentText = '';
-    } else {
-      // Text line
-      currentText += line + ' ';
-    }
+function extractCaptionTracks(playerResponse) {
+  try {
+    return playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+  } catch (error) {
+    return [];
   }
-  
-  // Add the last entry
-  if (currentText && currentTimestamp) {
-    transcript.push({
-      timestamp: currentTimestamp,
-      text: currentText.trim()
-    });
-  }
-  
-  return transcript;
 }
+
+function findEnglishTrack(captionTracks) {
+  // First try to find manual English captions
+  let englishTrack = captionTracks.find(track => 
+    track.languageCode === 'en' && track.kind !== 'asr'
+  );
+  
+  // If no manual captions, try auto-generated English captions
+  if (!englishTrack) {
+    englishTrack = captionTracks.find(track => 
+      track.languageCode === 'en' && track.kind === 'asr'
+    );
+  }
+  
+  // If still no English, try any English variant
+  if (!englishTrack) {
+    englishTrack = captionTracks.find(track => 
+      track.languageCode?.startsWith('en')
+    );
+  }
+  
+  return englishTrack;
+}
+
+async function downloadTranscript(baseUrl) {
+  // Add format parameter for JSON3 format which includes timing data
+  const transcriptUrl = baseUrl + '&fmt=json3';
+  
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(transcriptUrl);
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          resolve(response);
+        } catch (error) {
+          reject(new Error('Failed to parse transcript data'));
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      reject(new Error(`Transcript download failed: ${error.message}`));
+    });
+
+    req.end();
+  });
+}
+
+function parseTranscriptData(transcriptData) {
+  try {
+    const events = transcriptData?.events || [];
+    const transcript = [];
+
+    for (const event of events) {
+      if (event.segs) {
+        const startTime = event.tStartMs || 0;
+        const text = event.segs.map(seg => seg.utf8 || '').join('').trim();
+        
+        if (text) {
+          transcript.push({
+            timestamp: formatTimestamp(startTime),
+            text: text
+          });
+        }
+      }
+    }
+
+    return transcript;
+  } catch (error) {
+    throw new Error(`Failed to parse transcript data: ${error.message}`);
+  }
+}
+
+function formatTimestamp(startTimeMs) {
+  const totalSeconds = Math.floor(startTimeMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  } else {
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+}
+
