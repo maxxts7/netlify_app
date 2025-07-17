@@ -83,7 +83,17 @@ async function extractTranscript(url) {
     // Extract caption tracks from player response
     const captionTracks = extractCaptionTracks(playerResponse);
     
+    // Debug logging
+    console.log('Player response keys:', Object.keys(playerResponse || {}));
+    console.log('Caption tracks found:', captionTracks?.length || 0);
+    
     if (!captionTracks || captionTracks.length === 0) {
+      // Check if video has captions at all
+      const hasCaption = playerResponse?.captions;
+      console.log('Has captions object:', !!hasCaption);
+      if (hasCaption) {
+        console.log('Captions structure:', JSON.stringify(hasCaption, null, 2));
+      }
       throw new Error('No transcript/subtitles found for this video');
     }
 
@@ -111,12 +121,11 @@ function extractVideoId(url) {
 }
 
 async function getPlayerResponse(videoId) {
-  const apiUrl = 'https://www.youtube.com/youtubei/v1/player';
   const requestBody = {
     context: {
       client: {
         clientName: 'WEB',
-        clientVersion: '2.20240101.00.00'
+        clientVersion: '2.20240717.01.00'
       }
     },
     videoId: videoId
@@ -131,7 +140,11 @@ async function getPlayerResponse(videoId) {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(postData),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://www.youtube.com',
+        'Referer': `https://www.youtube.com/watch?v=${videoId}`
       }
     };
 
